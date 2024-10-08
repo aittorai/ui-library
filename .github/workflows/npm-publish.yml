@@ -1,0 +1,72 @@
+name: Publish package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        registry:
+          - url: https://registry.npmjs.org
+            token_secret: NPM_TOKEN
+          - url: https://npm.pkg.github.com
+            token_secret: GITHUB_TOKEN
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        name: Install pnpm
+        with:
+          version: 8
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+          registry-url: ${{ matrix.registry.url }}
+          scope: '@aittorai'
+
+      # TODO: remove when is resolved
+      - name: Reinstall @app packages
+        shell: bash
+        run: |
+          VERSION_ESLINT=$(node -p "require('./package.json').devDependencies['@aittorai/eslint-config-react']")
+          VERSION_PRETTIER=$(node -p "require('./package.json').devDependencies['@aittorai/prettier-config-react']")
+
+          pnpm uninstall @aittorai/eslint-config-react @aittorai/prettier-config-react
+          pnpm install --ignore-scripts -D @aittorai/eslint-config-react@$VERSION_ESLINT -D @aittorai/prettier-config-react@$VERSION_PRETTIER
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets[matrix.registry.token_secret] }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets[matrix.registry.token_secret] }}
+
+      - name: Version bump (prepatch)
+        # only if manual workflow dispatch and not on a tag
+        if: github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/')
+        run: npm version prepatch --preid=$(git rev-parse --short HEAD) --no-git-tag-version
+
+      - name: Publish
+        shell: bash
+        run: |
+          # manual workflow dispatches are tagged as pre-release - all releases should go through proper tagging process
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            FLAGS="--tag pre"
+          fi
+          pnpm publish --access public --no-git-checks $FLAGS
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets[matrix.registry.token_secret] }}
